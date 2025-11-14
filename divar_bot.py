@@ -4,6 +4,12 @@ import time
 import requests
 from datetime import datetime
 import logging
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # تنظیمات logging
 logging.basicConfig(
@@ -14,18 +20,8 @@ logger = logging.getLogger(__name__)
 
 # تنظیمات از environment variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-# Optional comma-separated list of chat ids. If set, this takes precedence over TELEGRAM_CHAT_ID.
-TELEGRAM_CHAT_IDS = os.getenv('TELEGRAM_CHAT_IDS')
-
-# Normalize chat ids into a list used by send_to_telegram. Keep as strings (Telegram accepts both).
-if TELEGRAM_CHAT_IDS:
-    TELEGRAM_CHAT_IDS_LIST = [c.strip() for c in TELEGRAM_CHAT_IDS.split(',') if c.strip()]
-elif TELEGRAM_CHAT_ID:
-    TELEGRAM_CHAT_IDS_LIST = [TELEGRAM_CHAT_ID]
-else:
-    TELEGRAM_CHAT_IDS_LIST = []
-CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', 900))  # 15 دقیقه (900 ثانیه)
+TELEGRAM_CHAT_IDS = os.getenv('TELEGRAM_CHAT_IDS', '').split(',')  # لیست آیدی‌ها با کاما
+CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', 900))
 DIVAR_API_URL = "https://api.divar.ir/v8/web-search/5/residential-rent"
 
 # فایل برای ذخیره آگهی‌های ارسال شده
@@ -54,7 +50,6 @@ def save_sent_posts(sent_posts):
 def search_divar(page_data=None):
     """جستجوی آگهی‌ها در دیوار"""
     if page_data is None:
-        # درخواست اولیه
         payload = {
             "city_ids": ["5"],
             "source_view": "FILTER",
@@ -101,7 +96,6 @@ def search_divar(page_data=None):
             }
         }
     else:
-        # درخواست صفحه‌بندی
         payload = {
             "city_ids": ["5"],
             "source_view": "FILTER",
@@ -149,8 +143,8 @@ def search_divar(page_data=None):
         logger.error(f"خطا در دریافت داده از دیوار: {e}")
         return None
 
-def send_to_telegram(post_data):
-    """ارسال آگهی به تلگرام"""
+async def send_to_telegram_users(bot, post_data, chat_ids):
+    """ارسال آگهی به لیست کاربران"""
     try:
         data = post_data.get('data', {})
         token = data.get('token')
@@ -160,10 +154,8 @@ def send_to_telegram(post_data):
         middle_desc = data.get('middle_description_text', '')
         red_text = data.get('red_text', '')
         
-        # ساخت لینک آگهی
         post_url = f"https://divar.ir/v/{token}"
         
-        # ساخت متن پیام
         message = f"🏠 <b>{title}</b>\n\n"
         if top_desc:
             message += f"💰 {top_desc}\n"
@@ -173,51 +165,39 @@ def send_to_telegram(post_data):
             message += f"⚠️ {red_text}\n"
         message += f"\n🔗 <a href='{post_url}'>مشاهده آگهی</a>"
         
-        # ارسال به همه chat idهای تنظیم شده
-        if image_url:
-            base_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-        else:
-            base_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-
-        success = True
-        for chat in TELEGRAM_CHAT_IDS_LIST:
+        for chat_id in chat_ids:
             try:
                 if image_url:
-                    payload = {
-                        'chat_id': chat,
-                        'photo': image_url,
-                        'caption': message,
-                        'parse_mode': 'HTML'
-                    }
+                    await bot.send_photo(
+                        chat_id=chat_id,
+                        photo=image_url,
+                        caption=message,
+                        parse_mode='HTML'
+                    )
                 else:
-                    payload = {
-                        'chat_id': chat,
-                        'text': message,
-                        'parse_mode': 'HTML'
-                    }
-
-                response = requests.post(base_url, json=payload, timeout=30)
-                response.raise_for_status()
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=message,
+                        parse_mode='HTML'
+                    )
+                time.sleep(0.5)  # تاخیر بین ارسال به کاربران مختلف
             except Exception as e:
-                logger.error(f"خطا در ارسال به تلگرام برای chat_id={chat}: {e}")
-                success = False
-        return success
+                logger.error(f"خطا در ارسال به {chat_id}: {e}")
+        
+        return True
     except Exception as e:
         logger.error(f"خطا در ارسال به تلگرام: {e}")
         return False
 
-def process_posts():
-    """پردازش و ارسال آگهی‌های جدید"""
+def get_new_posts():
+    """دریافت آگهی‌های جدید"""
     sent_posts = load_sent_posts()
     new_posts = []
     
-    # دریافت صفحه اول
     result = search_divar()
     if not result:
-        logger.warning("خطا در دریافت داده‌ها")
-        return
+        return new_posts, sent_posts
     
-    # پردازش تمام صفحات
     page_count = 1
     while result:
         logger.info(f"پردازش صفحه {page_count}")
@@ -232,53 +212,113 @@ def process_posts():
                     new_posts.append(widget)
                     sent_posts.add(token)
         
-        # بررسی وجود صفحه بعدی
         pagination = result.get('pagination', {})
         if not pagination.get('has_next_page'):
             break
         
-        # درخواست صفحه بعدی
         page_data = pagination.get('data')
         if page_data:
             page_count += 1
-            time.sleep(2)  # تاخیر بین درخواست‌ها
+            time.sleep(2)
             result = search_divar(page_data)
         else:
             break
     
-    # ارسال آگهی‌های جدید (از قدیمی به جدید)
-    logger.info(f"تعداد آگهی‌های جدید: {len(new_posts)}")
-    new_posts.reverse()
+    new_posts.reverse()  # از قدیمی به جدید
+    return new_posts, sent_posts
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دستور /start"""
+    keyboard = [
+        [InlineKeyboardButton("🔍 آگهی‌های جدید", callback_data='check_new')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
-    for post in new_posts:
-        if send_to_telegram(post):
-            logger.info(f"آگهی ارسال شد: {post['data'].get('token')}")
-            time.sleep(1)  # تاخیر بین پیام‌ها
+    await update.message.reply_text(
+        '🏠 ربات اعلان آگهی‌های دیوار\n\n'
+        'برای دریافت آگهی‌های جدید دکمه زیر را بزنید:',
+        reply_markup=reply_markup
+    )
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت دکمه‌ها"""
+    query = update.callback_query
+    await query.answer()
     
-    # ذخیره لیست آگهی‌های ارسال شده
-    save_sent_posts(sent_posts)
+    if query.data == 'check_new':
+        await query.edit_message_text('🔄 در حال بررسی آگهی‌های جدید...')
+        
+        new_posts, sent_posts = get_new_posts()
+        
+        if new_posts:
+            await query.edit_message_text(f'📬 {len(new_posts)} آگهی جدید پیدا شد. در حال ارسال...')
+            
+            for post in new_posts:
+                await send_to_telegram_users(context.bot, post, TELEGRAM_CHAT_IDS)
+                time.sleep(1)
+            
+            save_sent_posts(sent_posts)
+            
+            keyboard = [[InlineKeyboardButton("🔍 آگهی‌های جدید", callback_data='check_new')]]
+            await query.message.reply_text(
+                f'✅ {len(new_posts)} آگهی ارسال شد.',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        else:
+            keyboard = [[InlineKeyboardButton("🔍 آگهی‌های جدید", callback_data='check_new')]]
+            await query.edit_message_text(
+                '✅ آگهی جدیدی یافت نشد.',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+async def periodic_check(context: ContextTypes.DEFAULT_TYPE):
+    """بررسی دوره‌ای آگهی‌ها"""
+    logger.info("شروع بررسی دوره‌ای...")
+    
+    new_posts, sent_posts = get_new_posts()
+    
+    if new_posts:
+        logger.info(f"تعداد آگهی‌های جدید: {len(new_posts)}")
+        
+        for post in new_posts:
+            await send_to_telegram_users(context.bot, post, TELEGRAM_CHAT_IDS)
+            time.sleep(1)
+        
+        save_sent_posts(sent_posts)
+    else:
+        logger.info("آگهی جدیدی یافت نشد")
 
 def main():
     """تابع اصلی"""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_IDS_LIST:
-        logger.error("TELEGRAM_BOT_TOKEN و حداقل یک TELEGRAM_CHAT_ID یا TELEGRAM_CHAT_IDS باید تنظیم شوند")
+    global TELEGRAM_CHAT_IDS
+    
+    if not TELEGRAM_BOT_TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN باید تنظیم شود")
         return
     
-    logger.info("بات شروع به کار کرد")
-    logger.info(f"بررسی هر {CHECK_INTERVAL} ثانیه")
+    if not TELEGRAM_CHAT_IDS or TELEGRAM_CHAT_IDS == ['']:
+        logger.error("TELEGRAM_CHAT_IDS باید تنظیم شود")
+        return
     
-    while True:
-        try:
-            logger.info("شروع بررسی آگهی‌های جدید...")
-            process_posts()
-            logger.info(f"پایان بررسی. منتظر {CHECK_INTERVAL} ثانیه...")
-            time.sleep(CHECK_INTERVAL)
-        except KeyboardInterrupt:
-            logger.info("بات متوقف شد")
-            break
-        except Exception as e:
-            logger.error(f"خطای غیرمنتظره: {e}")
-            time.sleep(60)
+    # پاک کردن فضاهای خالی از لیست
+    TELEGRAM_CHAT_IDS = [cid.strip() for cid in TELEGRAM_CHAT_IDS if cid.strip()]
+    
+    logger.info(f"بات شروع به کار کرد - تعداد کاربران: {len(TELEGRAM_CHAT_IDS)}")
+    logger.info(f"بررسی خودکار هر {CHECK_INTERVAL} ثانیه")
+    
+    # ساخت application
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # اضافه کردن handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    
+    # تنظیم job برای بررسی دوره‌ای
+    job_queue = application.job_queue
+    job_queue.run_repeating(periodic_check, interval=CHECK_INTERVAL, first=10)
+    
+    # اجرای بات
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
