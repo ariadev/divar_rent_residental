@@ -2,134 +2,98 @@ import os
 import json
 import time
 import requests
-from datetime import datetime
 import logging
-from dotenv import load_dotenv
-
-load_dotenv()
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# تنظیمات logging
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
+# Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# تنظیمات از environment variables
+# Configuration
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-TELEGRAM_CHAT_IDS = os.getenv('TELEGRAM_CHAT_IDS', '').split(',')  # لیست آیدی‌ها با کاما
+TELEGRAM_CHAT_IDS = [cid.strip() for cid in os.getenv('TELEGRAM_CHAT_IDS', '').split(',') if cid.strip()]
 CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', 900))
-DIVAR_API_URL = "https://api.divar.ir/v8/web-search/5/residential-rent"
+SENT_POSTS_FILE = 'sent_posts.json'
 
-# فایل برای ذخیره آگهی‌های ارسال شده
-SENT_POSTS_FILE = '/data/sent_posts.json'
+# Divar API configuration
+DIVAR_API_URL = "https://api.divar.ir/v8/web-search/5/residential-rent"
+API_PAYLOAD = {
+    "city_ids": ["5"],
+    "source_view": "FILTER",
+    "disable_recommendation": False,
+    "map_state": {
+        "camera_info": {
+            "bbox": {
+                "min_latitude": 37.73286437988281,
+                "min_longitude": 45.88922882080078,
+                "max_latitude": 38.48418426513672,
+                "max_longitude": 46.49272537231445
+            },
+            "place_hash": "5||residential-rent",
+            "zoom": 9.370656250950889
+        },
+        "page_state": "HALF_STATE"
+    },
+    "search_data": {
+        "form_data": {
+            "data": {
+                "bbox": {
+                    "repeated_float": {
+                        "value": [
+                            {"value": 45.8892288},
+                            {"value": 37.7328644},
+                            {"value": 46.4927254},
+                            {"value": 38.4841843}
+                        ]
+                    }
+                },
+                "credit": {"number_range": {"maximum": "200000000"}},
+                "rent": {"number_range": {"maximum": "13000000"}},
+                "category": {"str": {"value": "residential-rent"}}
+            }
+        },
+        "server_payload": {
+            "@type": "type.googleapis.com/widgets.SearchData.ServerPayload",
+            "additional_form_data": {
+                "data": {
+                    "sort": {"str": {"value": "sort_date"}}
+                }
+            }
+        }
+    }
+}
 
 def load_sent_posts():
-    """بارگذاری لیست توکن‌های آگهی‌های ارسال شده"""
+    """Load sent post tokens from file"""
     try:
         if os.path.exists(SENT_POSTS_FILE):
             with open(SENT_POSTS_FILE, 'r') as f:
                 return set(json.load(f))
-        return set()
     except Exception as e:
-        logger.error(f"خطا در بارگذاری فایل: {e}")
-        return set()
+        logger.error(f"Error loading sent posts: {e}")
+    return set()
 
 def save_sent_posts(sent_posts):
-    """ذخیره لیست توکن‌های آگهی‌های ارسال شده"""
+    """Save sent post tokens to file"""
     try:
-        os.makedirs(os.path.dirname(SENT_POSTS_FILE), exist_ok=True)
         with open(SENT_POSTS_FILE, 'w') as f:
             json.dump(list(sent_posts), f)
     except Exception as e:
-        logger.error(f"خطا در ذخیره فایل: {e}")
+        logger.error(f"Error saving sent posts: {e}")
 
 def search_divar(page_data=None):
-    """جستجوی آگهی‌ها در دیوار"""
-    if page_data is None:
-        payload = {
-            "city_ids": ["5"],
-            "source_view": "FILTER",
-            "disable_recommendation": False,
-            "map_state": {
-                "camera_info": {
-                    "bbox": {
-                        "min_latitude": 37.73286437988281,
-                        "min_longitude": 45.88922882080078,
-                        "max_latitude": 38.48418426513672,
-                        "max_longitude": 46.49272537231445
-                    },
-                    "place_hash": "5||residential-rent",
-                    "zoom": 9.370656250950889
-                },
-                "page_state": "HALF_STATE"
-            },
-            "search_data": {
-                "form_data": {
-                    "data": {
-                        "bbox": {
-                            "repeated_float": {
-                                "value": [
-                                    {"value": 45.8892288},
-                                    {"value": 37.7328644},
-                                    {"value": 46.4927254},
-                                    {"value": 38.4841843}
-                                ]
-                            }
-                        },
-                        "credit": {"number_range": {"maximum": "200000000"}},
-                        "rent": {"number_range": {"maximum": "13000000"}},
-                        "category": {"str": {"value": "residential-rent"}}
-                    }
-                },
-                "server_payload": {
-                    "@type": "type.googleapis.com/widgets.SearchData.ServerPayload",
-                    "additional_form_data": {
-                        "data": {
-                            "sort": {"str": {"value": "sort_date"}}
-                        }
-                    }
-                }
-            }
-        }
-    else:
-        payload = {
-            "city_ids": ["5"],
-            "source_view": "FILTER",
-            "pagination_data": page_data,
-            "disable_recommendation": False,
-            "map_state": {"camera_info": {"bbox": {}}},
-            "search_data": {
-                "form_data": {
-                    "data": {
-                        "category": {"str": {"value": "residential-rent"}},
-                        "credit": {"number_range": {"maximum": "200000000"}},
-                        "rent": {"number_range": {"maximum": "13000000"}},
-                        "bbox": {
-                            "repeated_float": {
-                                "value": [
-                                    {"value": 45.8892288},
-                                    {"value": 37.7328644},
-                                    {"value": 46.4927254},
-                                    {"value": 38.4841843}
-                                ]
-                            }
-                        }
-                    }
-                },
-                "server_payload": {
-                    "@type": "type.googleapis.com/widgets.SearchData.ServerPayload",
-                    "additional_form_data": {
-                        "data": {
-                            "sort": {"str": {"value": "sort_date"}}
-                        }
-                    }
-                }
-            }
-        }
+    """Search for posts on Divar"""
+    payload = API_PAYLOAD.copy()
+    if page_data:
+        payload["pagination_data"] = page_data
     
     try:
         headers = {
@@ -140,15 +104,15 @@ def search_divar(page_data=None):
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        logger.error(f"خطا در دریافت داده از دیوار: {e}")
+        logger.error(f"Error fetching data from Divar: {e}")
         return None
 
-async def send_to_telegram_users(bot, post_data, chat_ids):
-    """ارسال آگهی به لیست کاربران"""
+async def send_telegram_message(bot, post_data, chat_ids):
+    """Send post to Telegram users"""
     try:
         data = post_data.get('data', {})
         token = data.get('token')
-        title = data.get('title', 'بدون عنوان')
+        title = data.get('title', 'No title')
         image_url = data.get('image_url')
         top_desc = data.get('top_description_text', '')
         middle_desc = data.get('middle_description_text', '')
@@ -163,9 +127,7 @@ async def send_to_telegram_users(bot, post_data, chat_ids):
             message += f"💵 {middle_desc}\n"
         if red_text:
             message += f"⚠️ {red_text}\n"
-        message += f"\n🔗 <a href='{post_url}'>مشاهده آگهی</a>"
-        
-        logger.info(f"📢 ارسال آگهی: {title} (Token: {token})")
+        message += f"\n🔗 <a href='{post_url}'>View Post</a>"
         
         success_count = 0
         for chat_id in chat_ids:
@@ -177,27 +139,24 @@ async def send_to_telegram_users(bot, post_data, chat_ids):
                         caption=message,
                         parse_mode='HTML'
                     )
-                    logger.info(f"✅ تصویر ارسال شد به {chat_id}")
                 else:
                     await bot.send_message(
                         chat_id=chat_id,
                         text=message,
                         parse_mode='HTML'
                     )
-                    logger.info(f"✅ پیام متنی ارسال شد به {chat_id}")
                 success_count += 1
-                time.sleep(0.5)  # تاخیر بین ارسال به کاربران مختلف
+                await asyncio.sleep(0.5)  # Use asyncio.sleep instead of time.sleep
             except Exception as e:
-                logger.error(f"❌ خطا در ارسال به {chat_id}: {e}")
+                logger.error(f"Error sending to {chat_id}: {e}")
         
-        return success_count > 0  # Return True if at least one message was sent
-        
+        return success_count > 0
     except Exception as e:
-        logger.error(f"❌ خطا در ارسال به تلگرام: {e}")
+        logger.error(f"Error sending to Telegram: {e}")
         return False
 
 def get_new_posts():
-    """دریافت آگهی‌های جدید"""
+    """Get new posts from Divar"""
     sent_posts = load_sent_posts()
     new_posts = []
     
@@ -207,7 +166,7 @@ def get_new_posts():
     
     page_count = 1
     while result:
-        logger.info(f"پردازش صفحه {page_count}")
+        logger.info(f"Processing page {page_count}")
         
         widgets = result.get('list_widgets', [])
         for widget in widgets:
@@ -231,230 +190,157 @@ def get_new_posts():
         else:
             break
     
-    new_posts.reverse()  # از قدیمی به جدید
+    new_posts.reverse()
     return new_posts, sent_posts
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دستور /start"""
-    user_id = update.effective_user.id
-    user_name = update.effective_user.first_name
-    chat_id = update.effective_chat.id
-    
-    logger.info(f"👤 کاربر جدید: {user_name} (ID: {user_id}) - Chat ID: {chat_id}")
-    
-    # نمایش فیلترهای فعلی
-    filter_info = (
-        "📍 <b>محدوده جغرافیایی:</b>\n"
-        "• شهر: تهران\n"
-        "• طول جغرافیایی: 45.88° تا 46.49°\n"
-        "• عرض جغرافیایی: 37.73° تا 38.48°\n\n"
-        
-        "💰 <b>فیلترهای قیمت:</b>\n"
-        "• حداکثر قیمت رهن: 200,000,000 تومان\n"
-        "• حداکثر اجاره: 13,000,000 تومان\n\n"
-        
-        "📋 <b>سایر تنظیمات:</b>\n"
-        "• نوع: آگهی‌های برای اجاره\n"
-        "• مرتب‌سازی: بر اساس تاریخ (جدیدترین)\n"
-        f"• بررسی خودکار هر {CHECK_INTERVAL} ثانیه\n\n"
-        
-        "دکمه زیر را برای جستجوی آگهی‌های جدید بزنید:"
-    )
+    """Handle /start command"""
+    user = update.effective_user
     
     keyboard = [
-        [InlineKeyboardButton("🔍 آگهی‌های جدید", callback_data='check_new')],
-        [InlineKeyboardButton("ℹ️ اطلاعات", callback_data='info')]
+        [InlineKeyboardButton("🔍 Check New Posts", callback_data='check_new')],
+        [InlineKeyboardButton("ℹ️ Info", callback_data='info')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
+    welcome_text = (
+        "🏠 <b>Divar Post Notifier Bot</b>\n\n"
+        f"👋 Welcome {user.first_name}!\n\n"
+        "📍 <b>Search Area:</b> Tehran\n"
+        "💰 <b>Max Price:</b> 200,000,000 Tomans\n"
+        "🏠 <b>Max Rent:</b> 13,000,000 Tomans\n\n"
+        "Click the button below to check for new posts:"
+    )
+    
     await update.message.reply_text(
-        f'🏠 <b>ربات اعلان آگهی‌های دیوار</b>\n\n'
-        f'👋 خوش‌آمدید {user_name}!\n\n' +
-        filter_info,
+        welcome_text,
         reply_markup=reply_markup,
         parse_mode='HTML'
     )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """مدیریت دکمه‌ها"""
+    """Handle button callbacks"""
     query = update.callback_query
-    user_id = update.effective_user.id
-    
-    logger.info(f"🔘 دکمه {query.data} فشار داده شد توسط {user_id}")
     await query.answer()
     
-    # Define keyboards for reuse
     main_keyboard = [
-        [InlineKeyboardButton("🔍 آگهی‌های جدید", callback_data='check_new')],
-        [InlineKeyboardButton("ℹ️ اطلاعات", callback_data='info')]
+        [InlineKeyboardButton("🔍 Check New Posts", callback_data='check_new')],
+        [InlineKeyboardButton("ℹ️ Info", callback_data='info')]
     ]
-    back_keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data='back')]]
     
     if query.data == 'check_new':
-        logger.info(f"📍 شروع بررسی آگهی‌های جدید برای کاربر {user_id}")
-        
-        # Show loading message WITH keyboard
-        loading_keyboard = [[InlineKeyboardButton("⏹️ لغو", callback_data='back')]]
         await query.edit_message_text(
-            '🔄 در حال بررسی آگهی‌های جدید...',
-            reply_markup=InlineKeyboardMarkup(loading_keyboard)
+            '🔄 Checking for new posts...',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ Cancel", callback_data='back')]])
         )
         
         new_posts, sent_posts = get_new_posts()
-        logger.info(f"📊 تعداد آگهی‌های جدید: {len(new_posts)}")
         
         if new_posts:
-            # Update message to show progress WITH keyboard
             await query.edit_message_text(
-                f'📬 {len(new_posts)} آگهی جدید پیدا شد. در حال ارسال...',
-                reply_markup=InlineKeyboardMarkup(loading_keyboard)
+                f'📬 Found {len(new_posts)} new posts. Sending...',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ Cancel", callback_data='back')]])
             )
             
-            logger.info(f"📤 ارسال {len(new_posts)} آگهی به کاربران...")
             sent_count = 0
-            
             for post in new_posts:
                 try:
-                    success = await send_to_telegram_users(context.bot, post, TELEGRAM_CHAT_IDS)
+                    success = await send_telegram_message(context.bot, post, TELEGRAM_CHAT_IDS)
                     if success:
                         sent_count += 1
-                    time.sleep(1)
+                    await asyncio.sleep(1)
                 except Exception as e:
-                    logger.error(f"❌ خطا در ارسال آگهی: {e}")
+                    logger.error(f"Error sending post: {e}")
             
             save_sent_posts(sent_posts)
-            logger.info(f"✅ {sent_count} آگهی با موفقیت ارسال شد")
-            
-            # Show completion message WITH keyboard
             await query.edit_message_text(
-                f'✅ {sent_count} آگهی ارسال شد.',
+                f'✅ {sent_count} posts sent successfully.',
                 reply_markup=InlineKeyboardMarkup(main_keyboard)
             )
         else:
-            logger.info(f"ℹ️ آگهی جدیدی برای کاربر {user_id} یافت نشد")
             await query.edit_message_text(
-                '✅ آگهی جدیدی یافت نشد.',
+                '✅ No new posts found.',
                 reply_markup=InlineKeyboardMarkup(main_keyboard)
             )
             
     elif query.data == 'info':
-        logger.info(f"ℹ️ کاربر {user_id} درخواست اطلاعات کرد")
         info_text = (
-            "📍 <b>محدوده جغرافیایی:</b>\n"
-            "• شهر: تهران\n"
-            "• طول جغرافیایی: 45.88° تا 46.49°\n"
-            "• عرض جغرافیایی: 37.73° تا 38.48°\n\n"
-            
-            "💰 <b>فیلترهای قیمت:</b>\n"
-            "• حداکثر قیمت رهن: 200,000,000 تومان\n"
-            "• حداکثر اجاره: 13,000,000 تومان\n\n"
-            
-            "📋 <b>سایر تنظیمات:</b>\n"
-            "• نوع: آگهی‌های برای اجاره\n"
-            "• مرتب‌سازی: بر اساس تاریخ (جدیدترین)\n"
-            f"• بررسی خودکار هر {CHECK_INTERVAL} ثانیه\n"
+            "📍 <b>Search Area:</b> Tehran\n"
+            "💰 <b>Max Price:</b> 200,000,000 Tomans\n"
+            "🏠 <b>Max Rent:</b> 13,000,000 Tomans\n"
+            f"⏰ <b>Check Interval:</b> {CHECK_INTERVAL} seconds\n"
         )
         await query.edit_message_text(
-            info_text, 
-            reply_markup=InlineKeyboardMarkup(back_keyboard), 
+            info_text,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back')]]),
             parse_mode='HTML'
         )
         
     elif query.data == 'back':
-        logger.info(f"🔙 کاربر {user_id} به منو اصلی بازگشت")
         await query.edit_message_text(
-            '🏠 <b>ربات اعلان آگهی‌های دیوار</b>\n\n'
-            'منوی اصلی:',
+            '🏠 <b>Divar Post Notifier Bot</b>\n\nMain menu:',
             reply_markup=InlineKeyboardMarkup(main_keyboard),
             parse_mode='HTML'
         )
 
 async def periodic_check(context: ContextTypes.DEFAULT_TYPE):
-    """بررسی دوره‌ای آگهی‌ها"""
-    logger.info("🕐 شروع بررسی دوره‌ای آگهی‌ها...")
+    """Periodic check for new posts"""
+    logger.info("Starting periodic check...")
     
     try:
         new_posts, sent_posts = get_new_posts()
         
         if new_posts:
-            logger.info(f"🎉 {len(new_posts)} آگهی جدید یافت شد")
+            logger.info(f"Found {len(new_posts)} new posts")
             
             for post in new_posts:
                 try:
-                    await send_to_telegram_users(context.bot, post, TELEGRAM_CHAT_IDS)
-                    time.sleep(1)
+                    await send_telegram_message(context.bot, post, TELEGRAM_CHAT_IDS)
+                    await asyncio.sleep(1)
                 except Exception as e:
-                    logger.error(f"❌ خطا در ارسال آگهی در بررسی دوره‌ای: {e}")
+                    logger.error(f"Error sending post in periodic check: {e}")
             
             save_sent_posts(sent_posts)
-            logger.info(f"✅ بررسی دوره‌ای انجام شد - {len(new_posts)} آگهی ارسال شد")
+            logger.info(f"Periodic check completed - {len(new_posts)} posts sent")
         else:
-            logger.info("ℹ️ بررسی دوره‌ای انجام شد - آگهی جدیدی یافت نشد")
+            logger.info("Periodic check completed - no new posts found")
     except Exception as e:
-        logger.error(f"❌ خطا در بررسی دوره‌ای: {e}")
+        logger.error(f"Error in periodic check: {e}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج خطاها"""
-    logger.error(f"❌ خطا: {context.error}")
+    """Handle errors"""
+    logger.error(f"Error: {context.error}")
 
 def main():
-    """تابع اصلی"""
-    global TELEGRAM_CHAT_IDS
-    
+    """Main function"""
     if not TELEGRAM_BOT_TOKEN:
-        logger.error("❌ TELEGRAM_BOT_TOKEN باید تنظیم شود")
+        logger.error("TELEGRAM_BOT_TOKEN is required")
         return
     
-    if not TELEGRAM_CHAT_IDS or TELEGRAM_CHAT_IDS == ['']:
-        logger.error("❌ TELEGRAM_CHAT_IDS باید تنظیم شود")
+    if not TELEGRAM_CHAT_IDS:
+        logger.error("TELEGRAM_CHAT_IDS is required")
         return
     
-    # پاک کردن فضاهای خالی از لیست
-    TELEGRAM_CHAT_IDS = [cid.strip() for cid in TELEGRAM_CHAT_IDS if cid.strip()]
+    logger.info("Starting Divar Bot...")
+    logger.info(f"Users: {len(TELEGRAM_CHAT_IDS)}")
+    logger.info(f"Check interval: {CHECK_INTERVAL} seconds")
     
-    logger.info(f"════════════════════════════════════════")
-    logger.info(f"🤖 ربات دیوار شروع به کار می‌کند")
-    logger.info(f"════════════════════════════════════════")
-    logger.info(f"📍 محدوده جغرافیایی: 45.88° تا 46.49° (طول)")
-    logger.info(f"📍 محدوده جغرافیایی: 37.73° تا 38.48° (عرض)")
-    logger.info(f"💰 حداکثر قیمت رهن: 200,000,000 تومان")
-    logger.info(f"💰 حداکثر اجاره: 13,000,000 تومان")
-    logger.info(f"👥 تعداد کاربران: {len(TELEGRAM_CHAT_IDS)}")
-    logger.info(f"🕐 بررسی خودکار هر {CHECK_INTERVAL} ثانیه")
-    logger.info(f"════════════════════════════════════════")
-    
-    # ساخت application
+    # Create application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # اضافه کردن handlers
+    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_error_handler(error_handler)
     
-    # تنظیم job برای بررسی دوره‌ای
+    # Setup periodic job
     job_queue = application.job_queue
-    job = job_queue.run_repeating(periodic_check, interval=CHECK_INTERVAL, first=10)
-    logger.info(f"✅ کار دوره‌ای ثبت شد: هر {CHECK_INTERVAL} ثانیه اجرا شود")
+    job_queue.run_repeating(periodic_check, interval=CHECK_INTERVAL, first=10)
     
-    # معالج برای خروج صحیح
-    def signal_handler(sig, frame):
-        logger.info("🛑 دریافت سیگنال خروج...")
-        application.stop()
-    
-    import signal
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-    
-    # اجرای بات
-    try:
-        logger.info("🚀 بات در حال فعالیت است...")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
-    except KeyboardInterrupt:
-        logger.info("⏹️  بات متوقف شد (Keyboard Interrupt)")
-    except Exception as e:
-        logger.error(f"❌ خطا در اجرای بات: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+    # Start bot
+    logger.info("Bot is running...")
+    application.run_polling()
 
 if __name__ == '__main__':
+    import asyncio
     main()
