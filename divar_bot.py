@@ -167,6 +167,7 @@ async def send_to_telegram_users(bot, post_data, chat_ids):
         
         logger.info(f"📢 ارسال آگهی: {title} (Token: {token})")
         
+        success_count = 0
         for chat_id in chat_ids:
             try:
                 if image_url:
@@ -184,11 +185,13 @@ async def send_to_telegram_users(bot, post_data, chat_ids):
                         parse_mode='HTML'
                     )
                     logger.info(f"✅ پیام متنی ارسال شد به {chat_id}")
+                success_count += 1
                 time.sleep(0.5)  # تاخیر بین ارسال به کاربران مختلف
             except Exception as e:
                 logger.error(f"❌ خطا در ارسال به {chat_id}: {e}")
         
-        return True
+        return success_count > 0  # Return True if at least one message was sent
+        
     except Exception as e:
         logger.error(f"❌ خطا در ارسال به تلگرام: {e}")
         return False
@@ -280,22 +283,41 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"🔘 دکمه {query.data} فشار داده شد توسط {user_id}")
     await query.answer()
     
+    # Define keyboards for reuse
+    main_keyboard = [
+        [InlineKeyboardButton("🔍 آگهی‌های جدید", callback_data='check_new')],
+        [InlineKeyboardButton("ℹ️ اطلاعات", callback_data='info')]
+    ]
+    back_keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data='back')]]
+    
     if query.data == 'check_new':
         logger.info(f"📍 شروع بررسی آگهی‌های جدید برای کاربر {user_id}")
-        await query.edit_message_text('🔄 در حال بررسی آگهی‌های جدید...')
+        
+        # Show loading message WITH keyboard
+        loading_keyboard = [[InlineKeyboardButton("⏹️ لغو", callback_data='back')]]
+        await query.edit_message_text(
+            '🔄 در حال بررسی آگهی‌های جدید...',
+            reply_markup=InlineKeyboardMarkup(loading_keyboard)
+        )
         
         new_posts, sent_posts = get_new_posts()
         logger.info(f"📊 تعداد آگهی‌های جدید: {len(new_posts)}")
         
         if new_posts:
-            await query.edit_message_text(f'📬 {len(new_posts)} آگهی جدید پیدا شد. در حال ارسال...')
-            logger.info(f"📤 ارسال {len(new_posts)} آگهی به کاربران...")
+            # Update message to show progress WITH keyboard
+            await query.edit_message_text(
+                f'📬 {len(new_posts)} آگهی جدید پیدا شد. در حال ارسال...',
+                reply_markup=InlineKeyboardMarkup(loading_keyboard)
+            )
             
+            logger.info(f"📤 ارسال {len(new_posts)} آگهی به کاربران...")
             sent_count = 0
+            
             for post in new_posts:
                 try:
-                    await send_to_telegram_users(context.bot, post, TELEGRAM_CHAT_IDS)
-                    sent_count += 1
+                    success = await send_to_telegram_users(context.bot, post, TELEGRAM_CHAT_IDS)
+                    if success:
+                        sent_count += 1
                     time.sleep(1)
                 except Exception as e:
                     logger.error(f"❌ خطا در ارسال آگهی: {e}")
@@ -303,18 +325,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_sent_posts(sent_posts)
             logger.info(f"✅ {sent_count} آگهی با موفقیت ارسال شد")
             
-            keyboard = [[InlineKeyboardButton("🔍 آگهی‌های جدید", callback_data='check_new')]]
-            await query.message.reply_text(
+            # Show completion message WITH keyboard
+            await query.edit_message_text(
                 f'✅ {sent_count} آگهی ارسال شد.',
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                reply_markup=InlineKeyboardMarkup(main_keyboard)
             )
         else:
             logger.info(f"ℹ️ آگهی جدیدی برای کاربر {user_id} یافت نشد")
-            keyboard = [[InlineKeyboardButton("🔍 آگهی‌های جدید", callback_data='check_new')]]
             await query.edit_message_text(
                 '✅ آگهی جدیدی یافت نشد.',
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                reply_markup=InlineKeyboardMarkup(main_keyboard)
             )
+            
     elif query.data == 'info':
         logger.info(f"ℹ️ کاربر {user_id} درخواست اطلاعات کرد")
         info_text = (
@@ -332,18 +354,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• مرتب‌سازی: بر اساس تاریخ (جدیدترین)\n"
             f"• بررسی خودکار هر {CHECK_INTERVAL} ثانیه\n"
         )
-        keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data='back')]]
-        await query.edit_message_text(info_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+        await query.edit_message_text(
+            info_text, 
+            reply_markup=InlineKeyboardMarkup(back_keyboard), 
+            parse_mode='HTML'
+        )
+        
     elif query.data == 'back':
         logger.info(f"🔙 کاربر {user_id} به منو اصلی بازگشت")
-        keyboard = [
-            [InlineKeyboardButton("🔍 آگهی‌های جدید", callback_data='check_new')],
-            [InlineKeyboardButton("ℹ️ اطلاعات", callback_data='info')]
-        ]
         await query.edit_message_text(
             '🏠 <b>ربات اعلان آگهی‌های دیوار</b>\n\n'
             'منوی اصلی:',
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            reply_markup=InlineKeyboardMarkup(main_keyboard),
             parse_mode='HTML'
         )
 
