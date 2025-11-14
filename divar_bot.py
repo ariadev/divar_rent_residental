@@ -15,6 +15,16 @@ logger = logging.getLogger(__name__)
 # تنظیمات از environment variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+# Optional comma-separated list of chat ids. If set, this takes precedence over TELEGRAM_CHAT_ID.
+TELEGRAM_CHAT_IDS = os.getenv('TELEGRAM_CHAT_IDS')
+
+# Normalize chat ids into a list used by send_to_telegram. Keep as strings (Telegram accepts both).
+if TELEGRAM_CHAT_IDS:
+    TELEGRAM_CHAT_IDS_LIST = [c.strip() for c in TELEGRAM_CHAT_IDS.split(',') if c.strip()]
+elif TELEGRAM_CHAT_ID:
+    TELEGRAM_CHAT_IDS_LIST = [TELEGRAM_CHAT_ID]
+else:
+    TELEGRAM_CHAT_IDS_LIST = []
 CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', 900))  # 15 دقیقه (900 ثانیه)
 DIVAR_API_URL = "https://api.divar.ir/v8/web-search/5/residential-rent"
 
@@ -163,26 +173,35 @@ def send_to_telegram(post_data):
             message += f"⚠️ {red_text}\n"
         message += f"\n🔗 <a href='{post_url}'>مشاهده آگهی</a>"
         
-        # ارسال با عکس
+        # ارسال به همه chat idهای تنظیم شده
         if image_url:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-            payload = {
-                'chat_id': TELEGRAM_CHAT_ID,
-                'photo': image_url,
-                'caption': message,
-                'parse_mode': 'HTML'
-            }
+            base_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         else:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            payload = {
-                'chat_id': TELEGRAM_CHAT_ID,
-                'text': message,
-                'parse_mode': 'HTML'
-            }
-        
-        response = requests.post(url, json=payload, timeout=30)
-        response.raise_for_status()
-        return True
+            base_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+        success = True
+        for chat in TELEGRAM_CHAT_IDS_LIST:
+            try:
+                if image_url:
+                    payload = {
+                        'chat_id': chat,
+                        'photo': image_url,
+                        'caption': message,
+                        'parse_mode': 'HTML'
+                    }
+                else:
+                    payload = {
+                        'chat_id': chat,
+                        'text': message,
+                        'parse_mode': 'HTML'
+                    }
+
+                response = requests.post(base_url, json=payload, timeout=30)
+                response.raise_for_status()
+            except Exception as e:
+                logger.error(f"خطا در ارسال به تلگرام برای chat_id={chat}: {e}")
+                success = False
+        return success
     except Exception as e:
         logger.error(f"خطا در ارسال به تلگرام: {e}")
         return False
@@ -241,8 +260,8 @@ def process_posts():
 
 def main():
     """تابع اصلی"""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.error("TELEGRAM_BOT_TOKEN و TELEGRAM_CHAT_ID باید تنظیم شوند")
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_IDS_LIST:
+        logger.error("TELEGRAM_BOT_TOKEN و حداقل یک TELEGRAM_CHAT_ID یا TELEGRAM_CHAT_IDS باید تنظیم شوند")
         return
     
     logger.info("بات شروع به کار کرد")

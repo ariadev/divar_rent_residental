@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - TELEGRAM_CHAT_IDS=${TELEGRAM_CHAT_IDS}
       - CHECK_INTERVAL=${CHECK_INTERVAL:-900}
     volumes:
       - ./data:/data
