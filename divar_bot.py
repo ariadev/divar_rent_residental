@@ -165,6 +165,8 @@ async def send_to_telegram_users(bot, post_data, chat_ids):
             message += f"⚠️ {red_text}\n"
         message += f"\n🔗 <a href='{post_url}'>مشاهده آگهی</a>"
         
+        logger.info(f"📢 ارسال آگهی: {title} (Token: {token})")
+        
         for chat_id in chat_ids:
             try:
                 if image_url:
@@ -174,19 +176,21 @@ async def send_to_telegram_users(bot, post_data, chat_ids):
                         caption=message,
                         parse_mode='HTML'
                     )
+                    logger.info(f"✅ تصویر ارسال شد به {chat_id}")
                 else:
                     await bot.send_message(
                         chat_id=chat_id,
                         text=message,
                         parse_mode='HTML'
                     )
+                    logger.info(f"✅ پیام متنی ارسال شد به {chat_id}")
                 time.sleep(0.5)  # تاخیر بین ارسال به کاربران مختلف
             except Exception as e:
-                logger.error(f"خطا در ارسال به {chat_id}: {e}")
+                logger.error(f"❌ خطا در ارسال به {chat_id}: {e}")
         
         return True
     except Exception as e:
-        logger.error(f"خطا در ارسال به تلگرام: {e}")
+        logger.error(f"❌ خطا در ارسال به تلگرام: {e}")
         return False
 
 def get_new_posts():
@@ -229,82 +233,173 @@ def get_new_posts():
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """دستور /start"""
+    user_id = update.effective_user.id
+    user_name = update.effective_user.first_name
+    chat_id = update.effective_chat.id
+    
+    logger.info(f"👤 کاربر جدید: {user_name} (ID: {user_id}) - Chat ID: {chat_id}")
+    
+    # نمایش فیلترهای فعلی
+    filter_info = (
+        "📍 <b>محدوده جغرافیایی:</b>\n"
+        "• شهر: تهران\n"
+        "• طول جغرافیایی: 45.88° تا 46.49°\n"
+        "• عرض جغرافیایی: 37.73° تا 38.48°\n\n"
+        
+        "💰 <b>فیلترهای قیمت:</b>\n"
+        "• حداکثر قیمت رهن: 200,000,000 تومان\n"
+        "• حداکثر اجاره: 13,000,000 تومان\n\n"
+        
+        "📋 <b>سایر تنظیمات:</b>\n"
+        "• نوع: آگهی‌های برای اجاره\n"
+        "• مرتب‌سازی: بر اساس تاریخ (جدیدترین)\n"
+        "• بررسی خودکار هر {CHECK_INTERVAL} ثانیه\n\n"
+        
+        "دکمه زیر را برای جستجوی آگهی‌های جدید بزنید:"
+    )
+    
     keyboard = [
-        [InlineKeyboardButton("🔍 آگهی‌های جدید", callback_data='check_new')]
+        [InlineKeyboardButton("🔍 آگهی‌های جدید", callback_data='check_new')],
+        [InlineKeyboardButton("ℹ️ اطلاعات", callback_data='info')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        '🏠 ربات اعلان آگهی‌های دیوار\n\n'
-        'برای دریافت آگهی‌های جدید دکمه زیر را بزنید:',
-        reply_markup=reply_markup
+        f'🏠 <b>ربات اعلان آگهی‌های دیوار</b>\n\n'
+        f'👋 خوش‌آمدید {user_name}!\n\n' +
+        filter_info,
+        reply_markup=reply_markup,
+        parse_mode='HTML'
     )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """مدیریت دکمه‌ها"""
     query = update.callback_query
+    user_id = update.effective_user.id
+    
+    logger.info(f"🔘 دکمه {query.data} فشار داده شد توسط {user_id}")
     await query.answer()
     
     if query.data == 'check_new':
+        logger.info(f"📍 شروع بررسی آگهی‌های جدید برای کاربر {user_id}")
         await query.edit_message_text('🔄 در حال بررسی آگهی‌های جدید...')
         
         new_posts, sent_posts = get_new_posts()
+        logger.info(f"📊 تعداد آگهی‌های جدید: {len(new_posts)}")
         
         if new_posts:
             await query.edit_message_text(f'📬 {len(new_posts)} آگهی جدید پیدا شد. در حال ارسال...')
+            logger.info(f"📤 ارسال {len(new_posts)} آگهی به کاربران...")
             
+            sent_count = 0
             for post in new_posts:
-                await send_to_telegram_users(context.bot, post, TELEGRAM_CHAT_IDS)
-                time.sleep(1)
+                try:
+                    await send_to_telegram_users(context.bot, post, TELEGRAM_CHAT_IDS)
+                    sent_count += 1
+                    time.sleep(1)
+                except Exception as e:
+                    logger.error(f"❌ خطا در ارسال آگهی: {e}")
             
             save_sent_posts(sent_posts)
+            logger.info(f"✅ {sent_count} آگهی با موفقیت ارسال شد")
             
             keyboard = [[InlineKeyboardButton("🔍 آگهی‌های جدید", callback_data='check_new')]]
             await query.message.reply_text(
-                f'✅ {len(new_posts)} آگهی ارسال شد.',
+                f'✅ {sent_count} آگهی ارسال شد.',
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
         else:
+            logger.info(f"ℹ️ آگهی جدیدی برای کاربر {user_id} یافت نشد")
             keyboard = [[InlineKeyboardButton("🔍 آگهی‌های جدید", callback_data='check_new')]]
             await query.edit_message_text(
                 '✅ آگهی جدیدی یافت نشد.',
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
+    elif query.data == 'info':
+        logger.info(f"ℹ️ کاربر {user_id} درخواست اطلاعات کرد")
+        info_text = (
+            "📍 <b>محدوده جغرافیایی:</b>\n"
+            "• شهر: تهران\n"
+            "• طول جغرافیایی: 45.88° تا 46.49°\n"
+            "• عرض جغرافیایی: 37.73° تا 38.48°\n\n"
+            
+            "💰 <b>فیلترهای قیمت:</b>\n"
+            "• حداکثر قیمت رهن: 200,000,000 تومان\n"
+            "• حداکثر اجاره: 13,000,000 تومان\n\n"
+            
+            "📋 <b>سایر تنظیمات:</b>\n"
+            "• نوع: آگهی‌های برای اجاره\n"
+            "• مرتب‌سازی: بر اساس تاریخ (جدیدترین)\n"
+            f"• بررسی خودکار هر {CHECK_INTERVAL} ثانیه\n"
+        )
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data='back')]]
+        await query.edit_message_text(info_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+    elif query.data == 'back':
+        logger.info(f"🔙 کاربر {user_id} به منو اصلی بازگشت")
+        keyboard = [
+            [InlineKeyboardButton("🔍 آگهی‌های جدید", callback_data='check_new')],
+            [InlineKeyboardButton("ℹ️ اطلاعات", callback_data='info')]
+        ]
+        await query.edit_message_text(
+            '🏠 <b>ربات اعلان آگهی‌های دیوار</b>\n\n'
+            'منوی اصلی:',
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='HTML'
+        )
 
 async def periodic_check(context: ContextTypes.DEFAULT_TYPE):
     """بررسی دوره‌ای آگهی‌ها"""
-    logger.info("شروع بررسی دوره‌ای...")
+    logger.info("🕐 شروع بررسی دوره‌ای آگهی‌ها...")
     
-    new_posts, sent_posts = get_new_posts()
-    
-    if new_posts:
-        logger.info(f"تعداد آگهی‌های جدید: {len(new_posts)}")
+    try:
+        new_posts, sent_posts = get_new_posts()
         
-        for post in new_posts:
-            await send_to_telegram_users(context.bot, post, TELEGRAM_CHAT_IDS)
-            time.sleep(1)
-        
-        save_sent_posts(sent_posts)
-    else:
-        logger.info("آگهی جدیدی یافت نشد")
+        if new_posts:
+            logger.info(f"🎉 {len(new_posts)} آگهی جدید یافت شد")
+            
+            for post in new_posts:
+                try:
+                    await send_to_telegram_users(context.bot, post, TELEGRAM_CHAT_IDS)
+                    time.sleep(1)
+                except Exception as e:
+                    logger.error(f"❌ خطا در ارسال آگهی در بررسی دوره‌ای: {e}")
+            
+            save_sent_posts(sent_posts)
+            logger.info(f"✅ بررسی دوره‌ای انجام شد - {len(new_posts)} آگهی ارسال شد")
+        else:
+            logger.info("ℹ️ بررسی دوره‌ای انجام شد - آگهی جدیدی یافت نشد")
+    except Exception as e:
+        logger.error(f"❌ خطا در بررسی دوره‌ای: {e}")
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالج خطاها"""
+    logger.error(f"❌ خطا: {context.error}")
 
 def main():
     """تابع اصلی"""
     global TELEGRAM_CHAT_IDS
     
     if not TELEGRAM_BOT_TOKEN:
-        logger.error("TELEGRAM_BOT_TOKEN باید تنظیم شود")
+        logger.error("❌ TELEGRAM_BOT_TOKEN باید تنظیم شود")
         return
     
     if not TELEGRAM_CHAT_IDS or TELEGRAM_CHAT_IDS == ['']:
-        logger.error("TELEGRAM_CHAT_IDS باید تنظیم شود")
+        logger.error("❌ TELEGRAM_CHAT_IDS باید تنظیم شود")
         return
     
     # پاک کردن فضاهای خالی از لیست
     TELEGRAM_CHAT_IDS = [cid.strip() for cid in TELEGRAM_CHAT_IDS if cid.strip()]
     
-    logger.info(f"بات شروع به کار کرد - تعداد کاربران: {len(TELEGRAM_CHAT_IDS)}")
-    logger.info(f"بررسی خودکار هر {CHECK_INTERVAL} ثانیه")
+    logger.info(f"════════════════════════════════════════")
+    logger.info(f"🤖 ربات دیوار شروع به کار می‌کند")
+    logger.info(f"════════════════════════════════════════")
+    logger.info(f"📍 محدوده جغرافیایی: 45.88° تا 46.49° (طول)")
+    logger.info(f"📍 محدوده جغرافیایی: 37.73° تا 38.48° (عرض)")
+    logger.info(f"💰 حداکثر قیمت رهن: 200,000,000 تومان")
+    logger.info(f"💰 حداکثر اجاره: 13,000,000 تومان")
+    logger.info(f"👥 تعداد کاربران: {len(TELEGRAM_CHAT_IDS)}")
+    logger.info(f"🕐 بررسی خودکار هر {CHECK_INTERVAL} ثانیه")
+    logger.info(f"════════════════════════════════════════")
     
     # ساخت application
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -312,13 +407,32 @@ def main():
     # اضافه کردن handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_error_handler(error_handler)
     
     # تنظیم job برای بررسی دوره‌ای
     job_queue = application.job_queue
-    job_queue.run_repeating(periodic_check, interval=CHECK_INTERVAL, first=10)
+    job = job_queue.run_repeating(periodic_check, interval=CHECK_INTERVAL, first=10)
+    logger.info(f"✅ کار دوره‌ای ثبت شد: هر {CHECK_INTERVAL} ثانیه اجرا شود")
+    
+    # معالج برای خروج صحیح
+    def signal_handler(sig, frame):
+        logger.info("🛑 دریافت سیگنال خروج...")
+        application.stop()
+    
+    import signal
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
     # اجرای بات
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        logger.info("🚀 بات در حال فعالیت است...")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    except KeyboardInterrupt:
+        logger.info("⏹️  بات متوقف شد (Keyboard Interrupt)")
+    except Exception as e:
+        logger.error(f"❌ خطا در اجرای بات: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 if __name__ == '__main__':
     main()
