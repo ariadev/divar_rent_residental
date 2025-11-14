@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  divar-bot:
+    build: .
+    container_name: divar-telegram-bot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-900}
+    volumes:
+      - ./data:/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
