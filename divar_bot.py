@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import asyncio
 import requests
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -26,49 +27,11 @@ SENT_POSTS_FILE = 'sent_posts.json'
 # Divar API configuration
 DIVAR_API_URL = "https://api.divar.ir/v8/web-search/5/residential-rent"
 API_PAYLOAD = {
-    "city_ids": ["5"],
-    "source_view": "FILTER",
-    "disable_recommendation": False,
-    "map_state": {
-        "camera_info": {
-            "bbox": {
-                "min_latitude": 37.73286437988281,
-                "min_longitude": 45.88922882080078,
-                "max_latitude": 38.48418426513672,
-                "max_longitude": 46.49272537231445
-            },
-            "place_hash": "5||residential-rent",
-            "zoom": 9.370656250950889
-        },
-        "page_state": "HALF_STATE"
+    "json_schema": {
+        "category": {"value": "residential-rent"},
+        "cities": ["5"]
     },
-    "search_data": {
-        "form_data": {
-            "data": {
-                "bbox": {
-                    "repeated_float": {
-                        "value": [
-                            {"value": 45.8892288},
-                            {"value": 37.7328644},
-                            {"value": 46.4927254},
-                            {"value": 38.4841843}
-                        ]
-                    }
-                },
-                "credit": {"number_range": {"maximum": "200000000"}},
-                "rent": {"number_range": {"maximum": "13000000"}},
-                "category": {"str": {"value": "residential-rent"}}
-            }
-        },
-        "server_payload": {
-            "@type": "type.googleapis.com/widgets.SearchData.ServerPayload",
-            "additional_form_data": {
-                "data": {
-                    "sort": {"str": {"value": "sort_date"}}
-                }
-            }
-        }
-    }
+    "last-post-date": int(time.time() * 1000)  # Current timestamp in milliseconds
 }
 
 def load_sent_posts():
@@ -89,11 +52,11 @@ def save_sent_posts(sent_posts):
     except Exception as e:
         logger.error(f"Error saving sent posts: {e}")
 
-def search_divar(page_data=None):
+def search_divar(last_post_date=None):
     """Search for posts on Divar"""
     payload = API_PAYLOAD.copy()
-    if page_data:
-        payload["pagination_data"] = page_data
+    if last_post_date:
+        payload["last-post-date"] = last_post_date
     
     try:
         headers = {
@@ -110,29 +73,27 @@ def search_divar(page_data=None):
 async def send_telegram_message(bot, post_data, chat_ids):
     """Send post to Telegram users"""
     try:
-        data = post_data.get('data', {})
-        token = data.get('token')
-        title = data.get('title', 'No title')
-        image_url = data.get('image_url')
-        top_desc = data.get('top_description_text', '')
-        middle_desc = data.get('middle_description_text', '')
-        red_text = data.get('red_text', '')
+        token = post_data.get('token')
+        title = post_data.get('title', 'No title')
+        image_url = post_data.get('image_url')
+        
+        # Extract description information
+        description = post_data.get('description', '')
+        district = post_data.get('district', '')
         
         post_url = f"https://divar.ir/v/{token}"
         
         message = f"🏠 <b>{title}</b>\n\n"
-        if top_desc:
-            message += f"💰 {top_desc}\n"
-        if middle_desc:
-            message += f"💵 {middle_desc}\n"
-        if red_text:
-            message += f"⚠️ {red_text}\n"
+        if district:
+            message += f"📍 {district}\n"
+        if description:
+            message += f"📝 {description}\n"
         message += f"\n🔗 <a href='{post_url}'>View Post</a>"
         
         success_count = 0
         for chat_id in chat_ids:
             try:
-                if image_url:
+                if image_url and image_url.startswith('http'):
                     await bot.send_photo(
                         chat_id=chat_id,
                         photo=image_url,
@@ -146,7 +107,7 @@ async def send_telegram_message(bot, post_data, chat_ids):
                         parse_mode='HTML'
                     )
                 success_count += 1
-                await asyncio.sleep(0.5)  # Use asyncio.sleep instead of time.sleep
+                await asyncio.sleep(0.5)
             except Exception as e:
                 logger.error(f"Error sending to {chat_id}: {e}")
         
@@ -164,33 +125,23 @@ def get_new_posts():
     if not result:
         return new_posts, sent_posts
     
-    page_count = 1
-    while result:
-        logger.info(f"Processing page {page_count}")
-        
-        widgets = result.get('list_widgets', [])
-        for widget in widgets:
-            if widget.get('widget_type') == 'POST_ROW':
-                data = widget.get('data', {})
-                token = data.get('token')
-                
-                if token and token not in sent_posts:
-                    new_posts.append(widget)
-                    sent_posts.add(token)
-        
-        pagination = result.get('pagination', {})
-        if not pagination.get('has_next_page'):
-            break
-        
-        page_data = pagination.get('data')
-        if page_data:
-            page_count += 1
-            time.sleep(2)
-            result = search_divar(page_data)
-        else:
-            break
+    # Process the first page
+    post_list = result.get('web_widgets', {}).get('post_list', [])
     
-    new_posts.reverse()
+    for post in post_list:
+        if post.get('widget_type') == 'POST_ROW':
+            data = post.get('data', {})
+            token = data.get('token')
+            
+            if token and token not in sent_posts:
+                new_posts.append(data)
+                sent_posts.add(token)
+                logger.info(f"Found new post: {data.get('title', 'No title')}")
+    
+    # Save sent posts immediately to avoid duplicates
+    if new_posts:
+        save_sent_posts(sent_posts)
+    
     return new_posts, sent_posts
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -231,7 +182,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == 'check_new':
         await query.edit_message_text(
             '🔄 Checking for new posts...',
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ Cancel", callback_data='back')]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back')]])
         )
         
         new_posts, sent_posts = get_new_posts()
@@ -239,7 +190,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if new_posts:
             await query.edit_message_text(
                 f'📬 Found {len(new_posts)} new posts. Sending...',
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ Cancel", callback_data='back')]])
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back')]])
             )
             
             sent_count = 0
@@ -252,7 +203,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logger.error(f"Error sending post: {e}")
             
-            save_sent_posts(sent_posts)
             await query.edit_message_text(
                 f'✅ {sent_count} posts sent successfully.',
                 reply_markup=InlineKeyboardMarkup(main_keyboard)
@@ -293,15 +243,17 @@ async def periodic_check(context: ContextTypes.DEFAULT_TYPE):
         if new_posts:
             logger.info(f"Found {len(new_posts)} new posts")
             
+            sent_count = 0
             for post in new_posts:
                 try:
-                    await send_telegram_message(context.bot, post, TELEGRAM_CHAT_IDS)
+                    success = await send_telegram_message(context.bot, post, TELEGRAM_CHAT_IDS)
+                    if success:
+                        sent_count += 1
                     await asyncio.sleep(1)
                 except Exception as e:
                     logger.error(f"Error sending post in periodic check: {e}")
             
-            save_sent_posts(sent_posts)
-            logger.info(f"Periodic check completed - {len(new_posts)} posts sent")
+            logger.info(f"Periodic check completed - {sent_count} posts sent")
         else:
             logger.info("Periodic check completed - no new posts found")
     except Exception as e:
@@ -342,5 +294,4 @@ def main():
     application.run_polling()
 
 if __name__ == '__main__':
-    import asyncio
     main()
